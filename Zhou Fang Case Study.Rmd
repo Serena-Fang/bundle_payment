@@ -1,0 +1,181 @@
+---
+title: "Zhou Fang Case Study"
+author: "Zhou Fang"
+date: "2020/5/1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(kableExtra)
+library(janitor)
+library(ggbeeswarm)
+```
+
+### Import data from dataset
+```{r}
+hosp1 <- readRDS('~/Desktop/372 Case Study/hosp_util_data.rds')
+phy1 <- readRDS('~/Desktop/372 Case Study/phy_util_data.rds')
+bene <- readRDS('~/Desktop/372 Case Study/bene_data.rds')
+```
+
+### Change the date format for two dataset
+```{r}
+hosp <- hosp1 %>% 
+  mutate(Date=as_date(Date))
+phy <- phy1 %>%
+  mutate(Date=as_date(Date))
+hosp
+phy
+```
+
+```{r}
+#Coung the number of patients, inpatient stays, physician visits
+pat_num <- nrow(bene)
+inp_num <- nrow(hosp)
+phy_num <- nrow(phy)
+pat_num
+inp_num
+phy_num
+```
+
+```{r}
+#Date Range
+min_date <- min(hosp$Date)
+max_date <- max(hosp$Date)
+min_date
+max_date
+```
+
+```{r}
+#Calculate total profit
+profit <- hosp %>%
+  filter(Hospital_ID %in% c(1,2,3,4,5)) %>%
+  group_by(Hospital_ID) %>%
+  summarize(rev_tol=sum(Revenue)/1000000,
+            cost_tol=sum(Cost)/1000000,
+            profit_tol=sum(Revenue-Cost)/1000000) %>%
+  adorn_totals("row")
+profit
+```
+
+```{r}
+kable(profit,digits=3,
+      col.names=c("Hospital","Revenue","Cost","Profit"),
+      caption="Current Revenue, Costs, and Profits by Hospital ($ MM)",
+      booktabs=T, escape=F,align="l") %>%
+  kable_styling(bootstrap_options = c("striped","bordered"), full_width = F)
+```
+
+```{r}
+#Build episodes
+episode_ip <- hosp %>%
+  mutate(episode_start=Date,
+         episode_end=Date+60) %>%
+  select(Beneficiary_ID,Hospital_ID,episode_start,episode_end) %>%
+  full_join(hosp %>% select(Beneficiary_ID,
+                            ip_date=Date,
+                            ip_cost=Cost,
+                            ip_revenue=Revenue,
+                            ip_id=Hospital_ID),
+            by="Beneficiary_ID") %>%
+  filter(ip_date>=episode_start, ip_date<=episode_end)
+episode_ip
+```
+
+```{r}
+# in-system episode costs
+episode_hosp1 <- episode_ip %>%
+  filter(ip_id %in% c(1,2,3,4,5)) %>%
+  group_by(Beneficiary_ID,Hospital_ID,episode_start,episode_end) %>%
+  summarize(cost_hosp_in =sum(ip_cost),
+            rev_hosp_in=sum(ip_revenue),
+            ip_count_in=n())
+episode_hosp1
+```
+
+```{r}
+# out-system episode costs
+episode_hosp2 <- episode_ip %>%
+  filter(!ip_id %in% c(1,2,3,4,5)) %>%
+  group_by(Beneficiary_ID,Hospital_ID,episode_start,episode_end) %>%
+  summarize(cost_hosp_out =sum(ip_cost),
+            rev_hosp_out=sum(ip_revenue),
+            ip_count_out=n())
+episode_hosp2
+```
+
+```{r}
+episode_phy <- hosp %>%
+  mutate(episode_start=Date,
+         episode_end=Date+60) %>%
+  select(Beneficiary_ID,Hospital_ID,episode_start,episode_end) %>%
+  full_join(phy %>% select(Beneficiary_ID,
+                                visit_date=Date,
+                                visit_cost=Cost,
+                                visit_revenue=Revenue),
+            by="Beneficiary_ID") %>%
+  filter(visit_date>=episode_start, visit_date<=episode_end) %>%
+  group_by(Beneficiary_ID,Hospital_ID,episode_start,episode_end) %>%
+  summarize(cost_phy=sum(visit_cost),
+            rev_phy=sum(visit_revenue),
+            phy_count=n())
+episode_phy
+```
+
+```{r}
+final_episode <- hosp %>%
+  mutate(episode_start=Date,
+         episode_end=Date+60) %>%
+  left_join(episode_hosp1,
+            by=c("Beneficiary_ID","Hospital_ID","episode_start","episode_end")) %>%
+  left_join(episode_hosp2,
+            by=c("Beneficiary_ID","Hospital_ID","episode_start","episode_end")) %>%
+  left_join(episode_phy,
+            by=c("Beneficiary_ID","Hospital_ID","episode_start","episode_end")) %>%
+  mutate_at(c("cost_hosp_in","cost_hosp_out",
+              "rev_hosp_in","rev_hosp_out",
+              "ip_count_in","ip_count_out",
+              "cost_phy","rev_phy","phy_count"),
+            ~replace(., is.na(.),0)) %>%
+  mutate(total_cost=cost_hosp_in+cost_hosp_out+cost_phy,
+         total_rev=rev_hosp_in+rev_hosp_out+rev_phy) %>%
+  filter(Hospital_ID %in% c(1,2,3,4,5))
+final_episode
+```
+
+```{r}
+episode_avg <- final_episode %>%
+  group_by(Hospital_ID) %>%
+  summarize(avg_rev=mean(total_rev),
+            avg_cost=mean(total_cost)) %>%
+  mutate(Hospital_ID =as.character(Hospital_ID)) %>%
+  bind_rows(summarize(Hospital_ID="Overall",final_episode,
+                      avg_rev=mean(total_rev),
+                      avg_cost=mean(total_cost)))
+episode_avg
+```
+
+```{r}
+#Violin Plot of episode costs
+fig1 <- final_episode %>%
+  ggplot(aes(x=as.factor(Hospital_ID),y=total_cost))+
+  geom_quasirandom(alpha=0.1,width=0.3,color="aquamarine") +
+  labs(x="Hospital",
+       y="Costs ($)") +
+  theme_minimal()
+fig1
+```
+
+```{r}
+ggplot(final_episode, aes(x=as.factor(Hospital_ID),y=total_cost))+
+  geom_violin(alpha=0.1,width=0.3)+
+  labs(x="Hospital",
+       y="Costs ($)") +
+  theme_minimal() 
+```
+
+
